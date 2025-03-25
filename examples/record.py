@@ -26,7 +26,7 @@ import argparse
 import logging
 import sys
 
-sys.path.append("..")
+sys.path.append("../")
 import rtde.rtde as rtde
 import rtde.rtde_config as rtde_config
 import rtde.csv_writer as csv_writer
@@ -37,41 +37,25 @@ parser = argparse.ArgumentParser()
 parser.add_argument(
     "--host", default="localhost", help="name of host to connect to (localhost)"
 )
-parser.add_argument("--port", type=int, default=30004, help="port number (30004)")
 parser.add_argument(
     "--samples", type=int, default=0, help="number of samples to record"
 )
 parser.add_argument(
     "--frequency", type=int, default=125, help="the sampling frequency in Herz"
 )
-parser.add_argument(
-    "--config",
-    default="record_configuration.xml",
-    help="data configuration file to use (record_configuration.xml)",
-)
-parser.add_argument(
-    "--output",
-    default="robot_data.csv",
-    help="data output file to write to (robot_data.csv)",
-)
-parser.add_argument("--verbose", help="increase output verbosity", action="store_true")
+
+
 parser.add_argument(
     "--buffered",
     help="Use buffered receive which doesn't skip data",
     action="store_true",
 )
-parser.add_argument(
-    "--binary", help="save the data in binary format", action="store_true"
-)
 args = parser.parse_args()
 
-if args.verbose:
-    logging.basicConfig(level=logging.INFO)
-
-conf = rtde_config.ConfigFile(args.config)
+conf = rtde_config.ConfigFile("record_configuration.xml")
 output_names, output_types = conf.get_recipe("out")
 
-con = rtde.RTDE(args.host, args.port)
+con = rtde.RTDE(args.host, 30004)
 con.connect()
 
 # get controller version
@@ -87,19 +71,17 @@ if not con.send_start():
     logging.error("Unable to start synchronization")
     sys.exit()
 
-writeModes = "wb" if args.binary else "w"
-with open(args.output, writeModes) as csvfile:
-    writer = None
 
-    if args.binary:
-        writer = csv_binary_writer.CSVBinaryWriter(csvfile, output_names, output_types)
-    else:
-        writer = csv_writer.CSVWriter(csvfile, output_names, output_types)
+with open("robot_data.csv", "w") as csvfile:
+    writer = csv_writer.CSVWriter(csvfile, output_names, output_types)
 
     writer.writeheader()
 
     i = 1
+    prev_state = None
     keep_running = True
+    threshold = 1e-3
+    
     while keep_running:
 
         if i % args.frequency == 0:
@@ -114,12 +96,22 @@ with open(args.output, writeModes) as csvfile:
         if args.samples > 0 and i >= args.samples:
             keep_running = False
         try:
-            if args.buffered:
-                state = con.receive_buffered(args.binary)
-            else:
-                state = con.receive(args.binary)
+            state = con.receive_buffered(args.binary) if args.buffered else con.receive(args.binary)
+            
             if state is not None:
-                writer.writerow(state)
+                significant_change = False
+                if prev_state is None:
+                    writer.writerow(state)
+                else:
+                    val_new = state.__dict__['actual_q']
+                    val_old = prev_state
+                    if any([abs(val_new[i] - val_old[i]) > threshold for i in range(len(val_new))]):
+                        significant_change = True
+                
+                if significant_change:
+                    writer.writerow(state)
+
+                prev_state = state.__dict__['actual_q']  
                 i += 1
 
         except KeyboardInterrupt:
